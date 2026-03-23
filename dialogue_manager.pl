@@ -12,16 +12,20 @@
 
 run_consultation :-
     print_intro,
+    print_narrative_intake_header,
     base_question_ids(BaseQuestions),
     run_question_sequence(BaseQuestions),
     print_interview_reflection,
+    print_interpreter_summary,
     ask_question(reflection_correction),
     print_interview_reflection,
+    print_interpreter_summary,
     run_targeted_clarifications(5),
     print_current_direction,
     leading_family(PrimaryFamily),
     candidate_families(CandidateFamilies),
     specialization_recommendations(CandidateFamilies, PrimaryCareer, SecondaryCareer),
+    print_specialization_inference(CandidateFamilies, PrimaryCareer, SecondaryCareer),
     print_final_report(PrimaryFamily, PrimaryCareer, SecondaryCareer).
 
 print_intro :-
@@ -30,6 +34,13 @@ print_intro :-
     writeln('then ask only the clarification questions that seem necessary.'),
     writeln('Useful commands at any prompt: why, help, examples, summary, profile,'),
     writeln('why this direction, what is unclear, skip, back, exit.'),
+    nl.
+
+print_narrative_intake_header :-
+    writeln('Narrative intake:'),
+    writeln('- Start with your story in your own words.'),
+    writeln('- You can give short or long answers.'),
+    writeln('- If you get stuck, type help or examples.'),
     nl.
 
 run_question_sequence(QuestionIds) :-
@@ -145,10 +156,23 @@ ask_question(QuestionId) :-
     question_prompt(QuestionId, Prompt),
     nl,
     format('~w~n', [Prompt]),
-    write('> '),
+    question_prompt_prefix(QuestionId, PromptPrefix),
+    write(PromptPrefix),
     read_line_to_string(user_input, RawInput),
     normalize_text(RawInput, CleanInput),
-    handle_input(QuestionId, RawInput, CleanInput).
+    (   CleanInput = ''
+    ->  writeln('- I did not receive any text. You can answer in your own words, type help for guidance, examples for sample answers, or skip to move on.'),
+        ask_question(QuestionId)
+    ;   handle_input(QuestionId, RawInput, CleanInput)
+    ).
+
+question_prompt_prefix(QuestionId, 'narrative> ') :-
+    base_question_ids(BaseQuestions),
+    member(QuestionId, BaseQuestions),
+    !.
+question_prompt_prefix(reflection_correction, 'review> ') :-
+    !.
+question_prompt_prefix(_, 'focus> ').
 
 handle_input(QuestionId, _, CleanInput) :-
     recognized_command(CleanInput, Command),
@@ -158,6 +182,10 @@ handle_input(QuestionId, RawInput, _) :-
     interpret_response(QuestionId, RawInput, Result),
     handle_interpretation(QuestionId, RawInput, Result).
 
+handle_interpretation(reflection_correction, RawInput, understood([])) :-
+    current_snapshot(Snapshot),
+    record_answer(reflection_correction, RawInput, [], Snapshot),
+    writeln('- Good. I will keep the current understanding and continue.').
 handle_interpretation(QuestionId, RawInput, understood(Facts)) :-
     current_snapshot(Snapshot),
     record_answer(QuestionId, RawInput, Facts, Snapshot),
@@ -175,7 +203,10 @@ ask_clarification(QuestionId, OriginalInput, ClarifyPrompt, PreFacts) :-
     write('clarify> '),
     read_line_to_string(user_input, ClarifyInput),
     normalize_text(ClarifyInput, CleanClarify),
-    (   recognized_command(CleanClarify, Command)
+    (   CleanClarify = ''
+    ->  writeln('- I did not receive a clarification yet. You can answer naturally, type help, or type skip if you want me to keep this area uncertain.'),
+        ask_clarification(QuestionId, OriginalInput, ClarifyPrompt, PreFacts)
+    ;   recognized_command(CleanClarify, Command)
     ->  execute_clarification_command(QuestionId, Command, OriginalInput, ClarifyPrompt, PreFacts)
     ;   join_inputs(OriginalInput, ClarifyInput, CombinedInput),
         interpret_response(QuestionId, CombinedInput, Result),
@@ -193,6 +224,7 @@ execute_clarification_command(QuestionId, examples, OriginalInput, ClarifyPrompt
     ask_clarification(QuestionId, OriginalInput, ClarifyPrompt, PreFacts).
 execute_clarification_command(QuestionId, summary, OriginalInput, ClarifyPrompt, PreFacts) :-
     print_interview_reflection,
+    print_interpreter_summary,
     ask_clarification(QuestionId, OriginalInput, ClarifyPrompt, PreFacts).
 execute_clarification_command(QuestionId, profile, OriginalInput, ClarifyPrompt, PreFacts) :-
     print_profile_summary,
@@ -249,7 +281,10 @@ ask_menu_fallback(QuestionId, SeedFacts, Options) :-
     write('menu> '),
     read_line_to_string(user_input, RawInput),
     normalize_text(RawInput, CleanInput),
-    (   recognized_command(CleanInput, Command)
+    (   CleanInput = ''
+    ->  writeln('- I did not receive a menu selection. Enter one or more numbers, or type help, skip, or exit.'),
+        ask_menu_fallback(QuestionId, SeedFacts, Options)
+    ;   recognized_command(CleanInput, Command)
     ->  execute_menu_command(QuestionId, Command, SeedFacts, Options)
     ;   parse_number_selection(RawInput, Numbers),
         resolve_menu_keys(Numbers, Options, Keys),
@@ -260,10 +295,8 @@ ask_menu_fallback(QuestionId, SeedFacts, Options) :-
     ->  current_snapshot(Snapshot),
         record_answer(QuestionId, RawInput, CombinedFacts, Snapshot),
         print_reflection(CombinedFacts)
-    ;   writeln('- Those menu choices were not valid. I will mark this area as uncertain and continue.'),
-        current_snapshot(Snapshot),
-        append(SeedFacts, [fact(uncertainty, uncertain_about(QuestionId))], FinalFacts),
-        record_answer(QuestionId, 'menu_unresolved', FinalFacts, Snapshot)
+    ;   writeln('- Those menu choices were not valid. Please enter the option numbers shown, or type help, skip, or exit.'),
+        ask_menu_fallback(QuestionId, SeedFacts, Options)
     ).
 
 execute_menu_command(QuestionId, why, SeedFacts, Options) :-
@@ -277,6 +310,7 @@ execute_menu_command(QuestionId, examples, SeedFacts, Options) :-
     ask_menu_fallback(QuestionId, SeedFacts, Options).
 execute_menu_command(QuestionId, summary, SeedFacts, Options) :-
     print_interview_reflection,
+    print_interpreter_summary,
     ask_menu_fallback(QuestionId, SeedFacts, Options).
 execute_menu_command(QuestionId, profile, SeedFacts, Options) :-
     print_profile_summary,
@@ -318,6 +352,12 @@ recognized_command(Text, why) :-
     !.
 recognized_command(Text, help) :-
     Text = help,
+    !.
+recognized_command(Text, help) :-
+    Text = commands,
+    !.
+recognized_command(Text, help) :-
+    contains_phrase(Text, 'what can i type'),
     !.
 recognized_command(Text, examples) :-
     Text = examples,
@@ -364,6 +404,7 @@ execute_command(QuestionId, examples) :-
     ask_question(QuestionId).
 execute_command(QuestionId, summary) :-
     print_interview_reflection,
+    print_interpreter_summary,
     ask_question(QuestionId).
 execute_command(QuestionId, profile) :-
     print_profile_summary,

@@ -1,20 +1,24 @@
 % Explanation, reflection, and reporting predicates.
 
 :- module(explanation, [
+    print_command_reference/0,
     print_current_direction/0,
     print_final_report/3,
+    print_interpreter_summary/0,
     print_interview_reflection/0,
     print_profile_summary/0,
     print_question_examples/1,
     print_question_help/1,
     print_question_reason/1,
     print_reflection/1,
+    print_specialization_inference/3,
     print_unclear_areas/0
 ]).
 
 :- use_module(family_inference).
 :- use_module(knowledge_base).
 :- use_module(profile).
+:- use_module(specialization_inference).
 :- use_module(utils).
 
 print_question_reason(QuestionId) :-
@@ -23,7 +27,11 @@ print_question_reason(QuestionId) :-
 
 print_question_help(QuestionId) :-
     question_help(QuestionId, HelpText),
-    format('- Help: ~w~n', [HelpText]).
+    format('- Help: ~w~n', [HelpText]),
+    print_command_reference.
+
+print_command_reference :-
+    writeln('- Commands: why, help, examples, summary, profile, why this direction, what is unclear, skip, back, exit.').
 
 print_question_examples(QuestionId) :-
     question_examples(QuestionId, ExampleText),
@@ -46,6 +54,28 @@ print_interview_reflection :-
     writeln('My current understanding:'),
     print_lines(SummaryLines),
     nl.
+
+print_interpreter_summary :-
+    nl,
+    writeln('Interpreter summary (structured evidence):'),
+    print_structured_evidence_line('Academic evidence', academic),
+    print_structured_evidence_line('Experience evidence', experience),
+    print_structured_evidence_line('Behavior evidence', behavior),
+    print_structured_evidence_line('Preference evidence', preference),
+    print_structured_evidence_line('Exclusion evidence', exclusion),
+    print_structured_evidence_line('Goal evidence', goal),
+    print_structured_evidence_line('Ambiguity markers', uncertainty),
+    nl.
+
+print_structured_evidence_line(Title, Category) :-
+    findall(Token, profile_fact(Category, Token), Tokens),
+    (   Tokens = []
+    ->  format('- ~w: none extracted yet.~n', [Title])
+    ;   findall(Label, (member(Token, Tokens), token_label(Category, Token, Label)), RawLabels),
+        sort(RawLabels, Labels),
+        list_to_sentence(Labels, Sentence),
+        format('- ~w: ~w.~n', [Title, Sentence])
+    ).
 
 narrative_summary(Academic, Experience, Preference, Exclusion, Uncertainty, Lines) :-
     first_labels(academic, Academic, 3, AcademicSummary),
@@ -114,15 +144,17 @@ has_category(Facts, Category) :-
 
 print_current_direction :-
     ranked_families(RankedFamilies),
-    RankedFamilies = [Top|Rest],
+    first_n(RankedFamilies, 3, TopFamilies),
     nl,
-    writeln('Current direction:'),
-    print_family_line(Top, 1),
-    (   Rest = [Second|_]
-    ->  print_family_line(Second, 2)
-    ;   true
-    ),
+    writeln('Family-level inference:'),
+    print_family_lines(TopFamilies, 1),
     nl.
+
+print_family_lines([], _).
+print_family_lines([Family|Rest], Index) :-
+    print_family_line(Family, Index),
+    NextIndex is Index + 1,
+    print_family_lines(Rest, NextIndex).
 
 print_family_line(family_assessment(Family, Score, Coverage, UncertaintyCount, Confidence, Positive, _), Index) :-
     family_label(Family, Label),
@@ -213,6 +245,38 @@ print_profile_summary :-
     print_category_summary('Uncertainty', uncertainty),
     nl.
 
+print_specialization_inference(CandidateFamilies, PrimaryCareer, SecondaryCareer) :-
+    ranked_careers(CandidateFamilies, RankedCareers),
+    first_n(RankedCareers, 3, TopCareers),
+    nl,
+    writeln('Specialization-level inference:'),
+    print_career_lines(TopCareers, 1, PrimaryCareer, SecondaryCareer),
+    nl.
+
+print_career_lines([], _, _, _).
+print_career_lines([Career|Rest], Index, PrimaryCareer, SecondaryCareer) :-
+    print_ranked_career_line(Career, Index, PrimaryCareer, SecondaryCareer),
+    NextIndex is Index + 1,
+    print_career_lines(Rest, NextIndex, PrimaryCareer, SecondaryCareer).
+
+print_ranked_career_line(career_assessment(Career, Family, Score, Coverage, UncertaintyCount, Confidence, Positive, _), Index, PrimaryCareer, SecondaryCareer) :-
+    career_label(Career, CareerLabel),
+    family_label(Family, FamilyLabel),
+    confidence_label(Confidence, ConfidenceLabel),
+    top_reason_summary(Positive, 2, Summary),
+    career_rank_tag(career_assessment(Career, Family, Score, Coverage, UncertaintyCount, Confidence, Positive, _), PrimaryCareer, SecondaryCareer, Tag),
+    format('~d. ~w~w (~w, family ~w, score ~d, coverage ~d, uncertainty ~d): ~w.~n',
+        [Index, CareerLabel, Tag, ConfidenceLabel, FamilyLabel, Score, Coverage, UncertaintyCount, Summary]).
+
+career_rank_tag(Assessment, PrimaryCareer, _, ' [primary recommendation]') :-
+    Assessment =@= PrimaryCareer,
+    !.
+career_rank_tag(Assessment, _, SecondaryCareer, ' [secondary recommendation]') :-
+    SecondaryCareer \= none,
+    Assessment =@= SecondaryCareer,
+    !.
+career_rank_tag(_, _, _, '').
+
 print_category_summary(Title, Category) :-
     findall(Token, profile_fact(Category, Token), Tokens),
     (   Tokens = []
@@ -225,6 +289,9 @@ print_category_summary(Title, Category) :-
 
 print_final_report(PrimaryFamily, PrimaryCareer, SecondaryCareer) :-
     nl,
+    writeln('Final recommendation report:'),
+    print_overall_fit_explanation(PrimaryFamily, PrimaryCareer, SecondaryCareer),
+    nl,
     print_primary_family(PrimaryFamily),
     nl,
     print_primary_career(PrimaryCareer),
@@ -232,6 +299,41 @@ print_final_report(PrimaryFamily, PrimaryCareer, SecondaryCareer) :-
     nl,
     print_profile_summary,
     print_validation_steps(PrimaryCareer).
+
+print_overall_fit_explanation(
+    family_assessment(Family, _, _, _, FamilyConfidence, FamilyPositive, FamilyNegative),
+    career_assessment(Career, _, _, _, _, CareerConfidence, CareerPositive, CareerNegative),
+    SecondaryCareer
+) :-
+    family_label(Family, FamilyLabel),
+    career_label(Career, CareerLabel),
+    overall_confidence_label(FamilyConfidence, CareerConfidence, ConfidenceLabel),
+    top_reason_summary(FamilyPositive, 2, FamilySupport),
+    top_reason_summary(CareerPositive, 2, CareerSupport),
+    format('- Overall recommendation: ~w -> ~w.~n', [FamilyLabel, CareerLabel]),
+    format('- Overall confidence: ~w.~n', [ConfidenceLabel]),
+    format('- Fit explanation: The strongest family-level pattern is ~w, while the clearest specialization-level pattern is ~w.~n', [FamilySupport, CareerSupport]),
+    print_overall_concern_line(FamilyNegative, CareerNegative),
+    print_secondary_option_line(SecondaryCareer).
+
+overall_confidence_label(strong_fit, strong_fit, 'Strong fit').
+overall_confidence_label(possible_fit, _, 'Possible fit').
+overall_confidence_label(_, possible_fit, 'Possible fit').
+overall_confidence_label(_, _, 'Moderate fit').
+
+print_overall_concern_line([], []).
+print_overall_concern_line(FamilyNegative, CareerNegative) :-
+    append(FamilyNegative, CareerNegative, CombinedNegative),
+    CombinedNegative \= [],
+    top_reason_summary(CombinedNegative, 2, Summary),
+    format('- Main caution: ~w.~n', [Summary]).
+
+print_secondary_option_line(none) :-
+    !.
+print_secondary_option_line(career_assessment(Career, _, _, _, _, _, Positive, _)) :-
+    career_label(Career, CareerLabel),
+    top_reason_summary(Positive, 2, Summary),
+    format('- Secondary option worth checking: ~w, because ~w.~n', [CareerLabel, Summary]).
 
 print_primary_family(family_assessment(Family, Score, Coverage, UncertaintyCount, Confidence, Positive, Negative)) :-
     family_label(Family, Label),
